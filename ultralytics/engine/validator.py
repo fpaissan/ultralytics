@@ -37,11 +37,7 @@ from ultralytics.nn.autobackend import AutoBackend
 from ultralytics.utils import LOGGER, TQDM, callbacks, colorstr, emojis
 from ultralytics.utils.checks import check_imgsz
 from ultralytics.utils.ops import Profile
-from ultralytics.utils.torch_utils import (
-    de_parallel,
-    select_device,
-    smart_inference_mode,
-)
+from ultralytics.utils.torch_utils import de_parallel, select_device, smart_inference_mode
 
 
 class BaseValidator:
@@ -217,7 +213,13 @@ class BaseValidator:
             "/Users/francescopaissan/Developer/vision/DynamicQuantizationBackend/dynQuant"
         )
 
-        from dynQuant import convertConvAndLinear
+        from dynQuant import convertConvAndLinear, replace_multihead_attention
+
+        # Avoid MHA from torch bc it is not quantizable!
+        if model.model is not None:
+            model.model.model = replace_multihead_attention(model.model.model)
+            print()
+            print("+++ INFO +++ Replaced MHA")
 
         if eval(os.getenv("dq", "0")) == 1:
             model.model.model = convertConvAndLinear(model.model.model)
