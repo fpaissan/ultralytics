@@ -206,12 +206,13 @@ class BaseValidator:
         ### I am importing everything here for the time being, it's ugly but correct.
         import sys
 
-        sys.path.append(
+        DEFAULT_DQPATH = (
             "/Users/francescopaissan/Developer/vision/DynamicQuantizationBackend"
         )
-        sys.path.append(
-            "/Users/francescopaissan/Developer/vision/DynamicQuantizationBackend/dynQuant"
-        )
+        PATH = os.getenv("DQPATH", DEFAULT_DQPATH)
+
+        sys.path.append(PATH)
+        sys.path.append(os.path.join(PATH, "dynQuant"))
 
         from dynQuant import convertConvAndLinear, replace_multihead_attention
 
