@@ -37,7 +37,11 @@ from ultralytics.nn.autobackend import AutoBackend
 from ultralytics.utils import LOGGER, TQDM, callbacks, colorstr, emojis
 from ultralytics.utils.checks import check_imgsz
 from ultralytics.utils.ops import Profile
-from ultralytics.utils.torch_utils import de_parallel, select_device, smart_inference_mode
+from ultralytics.utils.torch_utils import (
+    de_parallel,
+    select_device,
+    smart_inference_mode,
+)
 
 
 class BaseValidator:
@@ -222,8 +226,15 @@ class BaseValidator:
             print()
             print("+++ INFO +++ Replaced MHA")
 
-        if eval(os.getenv("dq", "0")) == 1:
-            model.model.model = convertConvAndLinear(model.model.model)
+        sampling_stride = eval(os.getenv("dq", "0"))
+        estimate = eval(os.getenv("est", "1")) == 1
+        print()
+        print("LOG+++++ Estimate =", estimate)
+        print("LOG+++++ SamplingStride =", sampling_stride)
+        if sampling_stride != 0:
+            model.model.model = convertConvAndLinear(
+                model.model.model, conv_stride=sampling_stride, estimate=estimate
+            )
             print(model.model.model)  # There should be no simple Conv and Linear left
 
         for batch_i, batch in enumerate(bar):
