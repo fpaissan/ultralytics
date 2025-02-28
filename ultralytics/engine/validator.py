@@ -273,6 +273,24 @@ class BaseValidator:
         )
         self.finalize_metrics()
         self.print_results()
+
+        import json
+
+        results_log = f"samplings_{sampling_stride}_est_{estimate}"
+        os.makedirs(results_log, exist_ok=True)
+
+        results_file = f"{self.args.task}_{self.args.model.split('.')[0]}_{self.args.data.split('.yaml')[0]}_{self.args.imgsz}.json"
+        results = [{"all": self.metrics.mean_results()[-2:]}]
+        if not self.training and self.nc > 1 and len(self.stats):
+            for i, c in enumerate(self.metrics.ap_class_index):
+                results.append({self.names[c]: self.metrics.class_result(i)[-2:]})
+
+        with open(os.path.join(results_log, results_file), "w") as fout:
+            json.dump(results, fout)
+
+        print()
+        print(f"++++++ Saved results in {os.path.join(results_log, results_file)}")
+
         self.run_callbacks("on_val_end")
         if self.training:
             model.float()
