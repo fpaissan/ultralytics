@@ -33,15 +33,12 @@ import torch
 
 from ultralytics.cfg import get_cfg, get_save_dir
 from ultralytics.data.utils import check_cls_dataset, check_det_dataset
+from ultralytics.engine.corrupt import ImageCorruptor
 from ultralytics.nn.autobackend import AutoBackend
 from ultralytics.utils import LOGGER, TQDM, callbacks, colorstr, emojis
 from ultralytics.utils.checks import check_imgsz
 from ultralytics.utils.ops import Profile
-from ultralytics.utils.torch_utils import (
-    de_parallel,
-    select_device,
-    smart_inference_mode,
-)
+from ultralytics.utils.torch_utils import de_parallel, select_device, smart_inference_mode
 
 
 class BaseValidator:
@@ -221,33 +218,40 @@ class BaseValidator:
         from dynQuant import convertConvAndLinear, replace_multihead_attention
 
         # Avoid MHA from torch bc it is not quantizable!
-        # if model.model is not None:
-        #     model.model.model = replace_multihead_attention(model.model.model)
-        #     print()
-        #     print("+++ INFO +++ Replaced MHA")
+        if "detr" in self.args.model:
+            model.model.model = replace_multihead_attention(model.model.model)
+            print()
+            print("+++ INFO +++ Replaced MHA")
+
+        ic = ImageCorruptor()
 
         sampling_stride = eval(os.getenv("dq", "0"))
         estimate = eval(os.getenv("est", "1")) == 1
         std_estim = eval(os.getenv("std", "3"))
+        corrupt = eval(os.getenv("corrupt", "0")) == 1
         print()
         print("LOG+++++ Estimate =", estimate)
         print("LOG+++++ SamplingStride =", sampling_stride)
         print("LOG+++++ STD estimation =", std_estim)
         if sampling_stride != 0:
             model.model.model = convertConvAndLinear(
-                model.model.model, 
-                conv_stride=sampling_stride, 
+                model.model.model,
+                conv_stride=sampling_stride,
                 estimate=estimate,
-                std=std_estim
+                std=std_estim,
             )
             print(model.model.model)  # There should be no simple Conv and Linear left
 
         for batch_i, batch in enumerate(bar):
             self.run_callbacks("on_val_batch_start")
             self.batch_i = batch_i
+
             # Preprocess
             with dt[0]:
                 batch = self.preprocess(batch)
+
+            if corrupt:
+                batch["img"] = ic.corrupt_batch(batch["img"], severity_range=(3, 5))
 
             # Inference
             with dt[1]:
