@@ -38,7 +38,11 @@ from ultralytics.nn.autobackend import AutoBackend
 from ultralytics.utils import LOGGER, TQDM, callbacks, colorstr, emojis
 from ultralytics.utils.checks import check_imgsz
 from ultralytics.utils.ops import Profile
-from ultralytics.utils.torch_utils import de_parallel, select_device, smart_inference_mode
+from ultralytics.utils.torch_utils import (
+    de_parallel,
+    select_device,
+    smart_inference_mode,
+)
 
 
 class BaseValidator:
@@ -227,12 +231,13 @@ class BaseValidator:
 
         sampling_stride = eval(os.getenv("dq", "0"))
         estimate = eval(os.getenv("est", "1")) == 1
-        std_estim = eval(os.getenv("std", "3"))
+        std_estim = eval(os.getenv("std", "2"))
         corrupt = eval(os.getenv("corrupt", "0")) == 1
         print()
         print("LOG+++++ Estimate =", estimate)
         print("LOG+++++ SamplingStride =", sampling_stride)
         print("LOG+++++ STD estimation =", std_estim)
+        print("LOG+++++ Corrupt =", corrupt)
         if sampling_stride != 0:
             model.model.model = convertConvAndLinear(
                 model.model.model,
@@ -251,7 +256,9 @@ class BaseValidator:
                 batch = self.preprocess(batch)
 
             if corrupt:
-                batch["img"] = ic.corrupt_batch(batch["img"], severity_range=(3, 5))
+                r = (3, 5)
+
+                batch["img"] = ic.corrupt_batch(batch["img"], severity_range=r)
 
             # Inference
             with dt[1]:
@@ -285,7 +292,7 @@ class BaseValidator:
         if not self.training:
             import json
 
-            results_log = f"samplings_{sampling_stride}_est_{estimate}"
+            results_log = f"samplings_{sampling_stride}_est_{estimate}_corr_{corrupt}"
             os.makedirs(results_log, exist_ok=True)
 
             results_file = f"{self.args.task}_{self.args.model.split('.')[0]}_{self.args.data.split('.yaml')[0].split('/')[-1]}_{self.args.imgsz}.json"
