@@ -35,7 +35,7 @@ class ImageCorruptor:
             "color_shift",
             "brightness",
             "contrast",
-            "distortion",
+            # "distortion",
             "combined",
         ]
 
