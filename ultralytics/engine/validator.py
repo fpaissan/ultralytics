@@ -187,7 +187,6 @@ class BaseValidator:
             self.dataloader = self.dataloader or self.get_dataloader(
                 self.data.get(self.args.split), self.args.batch
             )
-
             model.eval()
             model.warmup(
                 imgsz=(1 if pt else self.args.batch, 3, imgsz, imgsz)
@@ -220,8 +219,6 @@ class BaseValidator:
         sys.path.append(os.path.join(PATH, "backend"))
 
         from backend import convert_model, QuantMode
-        #TODO MANAGE CONFIG
-
         ic = ImageCorruptor()
 
         mode = eval(os.getenv("dq", "0"))
@@ -236,7 +233,6 @@ class BaseValidator:
         print("LOG+++++ Corrupt =", corrupt)
         print("LOG+++++ Per_Channel =", per_channel)
 
-        
         confss = {
             'global':{
                 'def': {'per_channel':per_channel},
@@ -253,15 +249,18 @@ class BaseValidator:
 
             },
             'layers':{
+                # '10': {'skip': True},
                 '23': {'skip': True},
             }
         }
+        
         if mode == 1:
             model.model.model = convert_model(
                 model.model.model,
                 mode=QuantMode.ESTIMATE,
                 config=confss
             )
+    
         elif mode == 2:
             model.model.model = convert_model(
                 model.model.model,
@@ -276,6 +275,42 @@ class BaseValidator:
                 config=confss
             )
 
+        # CALIBRATION LOADER
+        self.calibloader = self.dataloader or self.get_dataloader(
+            self.data.get('train'), 
+            self.args.batch
+        )
+        cal_batches = max(1, cal_size // self.args.batch)
+
+        # Use itertools for clean iteration limit
+        from itertools import islice
+
+        # Only proceed if in relevant modes
+        if mode in {1, 3}:
+            with torch.no_grad():  # Disable gradient calculation
+                # Create progress bar with context manager
+                with TQDM(
+                    desc='CALIBRATION', 
+                    total=cal_batches,
+                    unit='batch'
+                ) as pbar:
+                    # Process exactly cal_batches batches
+                    for batch_i, batch in enumerate(islice(self.calibloader, cal_batches)):
+                        self.run_callbacks("on_val_batch_start")
+                        self.batch_i = batch_i
+
+                        # Preprocess with timing context
+                        with dt[0]:
+                            batch = self.preprocess(batch)
+
+                        # Inference with timing context
+                        with dt[1]:
+                            preds = model(batch["img"], augment=augment)
+
+                        # Update progress bar
+                        pbar.update(1)
+                
+
         if verb:
             print(model.model.model)  # There should be no simple Conv and Linear left
 
@@ -286,23 +321,8 @@ class BaseValidator:
             # Preprocess
             with dt[0]:
                 batch = self.preprocess(batch)
+
             if corrupt:
-                if mode == 3:
-                    if batch_i == 0:
-                        import math
-                        cal_size = confss.get('global').get(QuantMode.STATIC).get('cal_size')
-                        batch_size = batch["img"].shape[0]
-
-                        batch_epoch = math.ceil(cal_size / batch_size)
-                        
-
-                    if batch_i == batch_epoch:
-                        print('From here start Corruptions')
-                    elif batch_i >= batch_epoch:
-                        r = (3, 5)
-
-                        batch["img"] = ic.corrupt_batch(batch["img"], severity_range=r)            
-                else:
                     r = (3, 5)
 
                     batch["img"] = ic.corrupt_batch(batch["img"], severity_range=r)
@@ -310,6 +330,8 @@ class BaseValidator:
             # Inference
             with dt[1]:
                 preds = model(batch["img"], augment=augment)
+            
+            # breakpoint()
 
             # Loss
             with dt[2]:
@@ -319,7 +341,7 @@ class BaseValidator:
             # Postprocess
             with dt[3]:
                 preds = self.postprocess(preds)
-
+                
             self.update_metrics(preds, batch)
             if self.args.plots and batch_i < 3:
                 self.plot_val_samples(batch, batch_i)
@@ -453,6 +475,12 @@ class BaseValidator:
         """Get data loader from dataset path and batch size."""
         raise NotImplementedError(
             "get_dataloader function not implemented for this validator"
+        )
+    
+    def get_calibloader(self, dataset_path, batch_size, cal_size, seed=42):
+        """Get calibration loader from dataset path and batch size."""
+        raise NotImplementedError(
+            "get_calibloader function not implemented for this validator"
         )
 
     def build_dataset(self, img_path):
