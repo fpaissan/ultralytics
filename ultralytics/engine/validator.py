@@ -187,7 +187,6 @@ class BaseValidator:
             self.dataloader = self.dataloader or self.get_dataloader(
                 self.data.get(self.args.split), self.args.batch
             )
-
             model.eval()
             model.warmup(
                 imgsz=(1 if pt else self.args.batch, 3, imgsz, imgsz)
@@ -217,34 +216,102 @@ class BaseValidator:
         PATH = os.getenv("DQPATH", DEFAULT_DQPATH)
 
         sys.path.append(PATH)
-        sys.path.append(os.path.join(PATH, "dynQuant"))
+        sys.path.append(os.path.join(PATH, "backend"))
 
-        from dynQuant import convertConvAndLinear, replace_multihead_attention
-
-        # Avoid MHA from torch bc it is not quantizable!
-        if "detr" in self.args.model:
-            model.model.model = replace_multihead_attention(model.model.model)
-            print()
-            print("+++ INFO +++ Replaced MHA")
-
+        from backend import convert_model, QuantMode
         ic = ImageCorruptor()
 
-        sampling_stride = eval(os.getenv("dq", "0"))
-        estimate = eval(os.getenv("est", "1")) == 1
-        std_estim = eval(os.getenv("std", "2"))
+        mode = eval(os.getenv("dq", "0"))
         corrupt = eval(os.getenv("corrupt", "0")) == 1
+        per_channel = eval(os.getenv("ch", "1")) == 1
+
+        sampling_stride = eval(os.getenv("stride", "1")) 
+        cal_size = eval(os.getenv("cal_size", "16"))
+        verb = eval(os.getenv("verb", "0"))
         print()
-        print("LOG+++++ Estimate =", estimate)
-        print("LOG+++++ SamplingStride =", sampling_stride)
-        print("LOG+++++ STD estimation =", std_estim)
+        print("LOG+++++ ESTIMATE MODE =", mode)
         print("LOG+++++ Corrupt =", corrupt)
-        if sampling_stride != 0:
-            model.model.model = convertConvAndLinear(
+        print("LOG+++++ Per_Channel =", per_channel)
+
+        confss = {
+            'global':{
+                'def': {'per_channel':per_channel},
+                QuantMode.ESTIMATE: {
+                    'Conv2d': {
+                        'e_std': 3,
+                        'sampling_stride': sampling_stride,
+                    },
+                    'Linear': {
+                        'e_std': 3,
+                    }
+                },
+                QuantMode.STATIC: {'cal_size': cal_size}
+
+            },
+            'layers':{
+                # '10': {'skip': True},
+                '23': {'skip': True},
+            }
+        }
+        
+        if mode == 1:
+            model.model.model = convert_model(
                 model.model.model,
-                conv_stride=sampling_stride,
-                estimate=estimate,
-                std=std_estim,
+                mode=QuantMode.ESTIMATE,
+                config=confss
             )
+    
+        elif mode == 2:
+            model.model.model = convert_model(
+                model.model.model,
+                mode=QuantMode.DYNAMIC,
+                config=confss
+            )
+        
+        elif mode == 3:
+            model.model.model = convert_model(
+                model.model.model,
+                mode=QuantMode.STATIC,
+                config=confss
+            )
+
+        # CALIBRATION LOADER
+        self.calibloader = self.dataloader or self.get_dataloader(
+            self.data.get('train'), 
+            self.args.batch
+        )
+        cal_batches = max(1, cal_size // self.args.batch)
+
+        # Use itertools for clean iteration limit
+        from itertools import islice
+
+        # Only proceed if in relevant modes
+        if mode in {1, 3}:
+            with torch.no_grad():  # Disable gradient calculation
+                # Create progress bar with context manager
+                with TQDM(
+                    desc='CALIBRATION', 
+                    total=cal_batches,
+                    unit='batch'
+                ) as pbar:
+                    # Process exactly cal_batches batches
+                    for batch_i, batch in enumerate(islice(self.calibloader, cal_batches)):
+                        self.run_callbacks("on_val_batch_start")
+                        self.batch_i = batch_i
+
+                        # Preprocess with timing context
+                        with dt[0]:
+                            batch = self.preprocess(batch)
+
+                        # Inference with timing context
+                        with dt[1]:
+                            preds = model(batch["img"], augment=augment)
+
+                        # Update progress bar
+                        pbar.update(1)
+                
+
+        if verb:
             print(model.model.model)  # There should be no simple Conv and Linear left
 
         for batch_i, batch in enumerate(bar):
@@ -256,13 +323,15 @@ class BaseValidator:
                 batch = self.preprocess(batch)
 
             if corrupt:
-                r = (3, 5)
+                    r = (3, 5)
 
-                batch["img"] = ic.corrupt_batch(batch["img"], severity_range=r)
+                    batch["img"] = ic.corrupt_batch(batch["img"], severity_range=r)
 
             # Inference
             with dt[1]:
                 preds = model(batch["img"], augment=augment)
+            
+            # breakpoint()
 
             # Loss
             with dt[2]:
@@ -272,7 +341,7 @@ class BaseValidator:
             # Postprocess
             with dt[3]:
                 preds = self.postprocess(preds)
-
+                
             self.update_metrics(preds, batch)
             if self.args.plots and batch_i < 3:
                 self.plot_val_samples(batch, batch_i)
@@ -292,10 +361,17 @@ class BaseValidator:
         if not self.training:
             import json
 
-            results_log = f"samplings_{sampling_stride}_est_{estimate}_corr_{corrupt}"
+            results_log = f"results/{str(QuantMode(mode)).split('.')[1]}__corr_{corrupt}_per_channel_{per_channel}"
+            if mode==0:
+                results_log = f"{results_log.split('_per_channel_')[0]}"
             os.makedirs(results_log, exist_ok=True)
 
             results_file = f"{self.args.task}_{self.args.model.split('.')[0]}_{self.args.data.split('.yaml')[0].split('/')[-1]}_{self.args.imgsz}.json"
+            if mode==1: #se estimate aggiungo il sampling stride al nome del file
+                results_file = f"{results_file.split('.json')[0]}_stride_{sampling_stride}.json"
+            if mode==3: #se static aggiungo il cal_size al nome del file
+                results_file = f"{results_file.split('.json')[0]}_cal_{cal_size}.json"
+                
             results = [{"all": self.metrics.mean_results()[-2:]}]
             if not self.training and self.nc > 1 and len(self.stats):
                 for i, c in enumerate(self.metrics.ap_class_index):
@@ -399,6 +475,12 @@ class BaseValidator:
         """Get data loader from dataset path and batch size."""
         raise NotImplementedError(
             "get_dataloader function not implemented for this validator"
+        )
+    
+    def get_calibloader(self, dataset_path, batch_size, cal_size, seed=42):
+        """Get calibration loader from dataset path and batch size."""
+        raise NotImplementedError(
+            "get_calibloader function not implemented for this validator"
         )
 
     def build_dataset(self, img_path):
